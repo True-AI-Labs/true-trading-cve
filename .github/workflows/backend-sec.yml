@@ -1,4 +1,4 @@
-name: Supply Chain Security — Rust
+name: Supply Chain Security — Backend
 
 on:
   workflow_call:
@@ -6,20 +6,22 @@ on:
       image-name:
         required: false
         type: string
-        description: "Docker image to scan after build (optional)"
+        description: "Docker image to scan (optional)"
 
 permissions:
   contents: read
 
 jobs:
   scan:
-    name: SBOM + Trivy + cargo-audit
+    name: SBOM + Trivy
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      # --- Rust: cargo-cyclonedx + cargo-audit (если есть Cargo.lock) ---
       - name: Cache cargo binaries
+        if: hashFiles('Cargo.lock') != ''
         id: cache-cargo-bin
         uses: actions/cache@v5
         with:
@@ -27,32 +29,63 @@ jobs:
           key: cargo-bin-cyclonedx-audit-v1
 
       - name: Install cargo-cyclonedx and cargo-audit
-        if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
+        if: hashFiles('Cargo.lock') != '' && steps.cache-cargo-bin.outputs.cache-hit != 'true'
         run: |
           cargo install cargo-cyclonedx --locked
           cargo install cargo-audit --locked
 
-      - name: Generate SBOM (CycloneDX)
+      - name: Generate SBOM — Rust
+        if: hashFiles('Cargo.lock') != ''
         run: cargo cyclonedx --format json
 
       - name: Locate SBOM file
-        id: sbom
+        if: hashFiles('Cargo.lock') != ''
+        id: rust-sbom
         run: |
           SBOM_FILE=$(find . -name "*.cdx.json" -not -path './target/*' | head -1)
-          echo "Found SBOM: $SBOM_FILE"
           echo "path=$SBOM_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Run Trivy on SBOM
+      - name: Run Trivy on SBOM — Rust
+        if: hashFiles('Cargo.lock') != ''
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: sbom
-          scan-ref: ${{ steps.sbom.outputs.path }}
+          scan-ref: ${{ steps.rust-sbom.outputs.path }}
           format: table
           output: trivy-results.txt
           severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: '0'
 
+      - name: Run cargo-audit
+        if: hashFiles('Cargo.lock') != ''
+        run: cargo audit > cargo-audit.txt 2>&1 || true
+
+      # --- Go и другие: Trivy fs (если нет Cargo.lock) ---
+      - name: Run Trivy — filesystem (Go / other)
+        if: hashFiles('Cargo.lock') == ''
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,config
+          format: table
+          output: trivy-results.txt
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+
+      - name: Generate SBOM — Go / other
+        if: hashFiles('Cargo.lock') == ''
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          skip-setup-trivy: true
+
+      # --- Secrets + IaC (для всех) ---
       - name: Run Trivy — secrets + IaC
+        if: hashFiles('Cargo.lock') != ''
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
@@ -63,6 +96,7 @@ jobs:
           exit-code: '0'
           skip-setup-trivy: true
 
+      # --- Docker image (опционально) ---
       - name: Run Trivy — Docker image
         if: ${{ inputs.image-name != '' }}
         uses: aquasecurity/trivy-action@v0.35.0
@@ -71,29 +105,29 @@ jobs:
           image-ref: ${{ inputs.image-name }}
           format: table
           output: trivy-image.txt
-          severity: CRITICAL,HIGH,MEDIUM
+          severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: '0'
           skip-setup-trivy: true
 
-      - name: Run cargo-audit
-        run: cargo audit > cargo-audit.txt 2>&1 || true
-
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: sbom-cyclonedx
-          path: ${{ steps.sbom.outputs.path }}
+          path: |
+            sbom.cdx.json
+            ${{ steps.rust-sbom.outputs.path }}
           retention-days: 90
 
       - name: Job Summary
         if: always()
         run: |
           {
-            echo "# Supply Chain Security Report — Rust"
+            echo "# Supply Chain Security Report — Backend"
             echo ""
             echo "**Commit:** \`${GITHUB_SHA:0:7}\` | **Repo:** \`${GITHUB_REPOSITORY}\`"
             echo ""
-            echo "## Trivy (SBOM)"
+            echo "## Trivy (vulnerabilities)"
             echo '```'
             [ -s trivy-results.txt ] && cat trivy-results.txt || echo "No vulnerabilities found."
             echo '```'
@@ -110,7 +144,7 @@ jobs:
             echo ""
             echo "## cargo-audit (RustSec)"
             echo '```'
-            [ -s cargo-audit.txt ] && cat cargo-audit.txt || echo "No advisories."
+            [ -s cargo-audit.txt ] && cat cargo-audit.txt || echo "Not a Rust project."
             echo '```'
             echo ""
             echo "---"

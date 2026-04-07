@@ -1,4 +1,4 @@
-name: Supply Chain Security — JS
+name: Supply Chain Security — AI
 
 on:
   workflow_call:
@@ -6,7 +6,7 @@ on:
       image-name:
         required: false
         type: string
-        description: "Docker image to scan after build (optional)"
+        description: "Docker image to scan (optional)"
 
 permissions:
   contents: read
@@ -47,12 +47,13 @@ jobs:
           image-ref: ${{ inputs.image-name }}
           format: table
           output: trivy-image.txt
-          severity: CRITICAL,HIGH,MEDIUM
+          severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: '0'
           skip-setup-trivy: true
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: sbom-cyclonedx
           path: sbom.cdx.json
@@ -62,7 +63,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "# Supply Chain Security Report — JS"
+            echo "# Supply Chain Security Report — AI"
             echo ""
             echo "**Commit:** \`${GITHUB_SHA:0:7}\` | **Repo:** \`${GITHUB_REPOSITORY}\`"
             echo ""
