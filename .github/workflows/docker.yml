@@ -1,0 +1,49 @@
+name: Supply Chain Security — Docker
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+        description: "Full image reference, e.g. ghcr.io/inc4/myapp:latest"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Trivy — Docker image
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image-name }}
+          format: table
+          output: trivy-image.txt
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-image-report
+          path: trivy-image.txt
+          retention-days: 90
+
+      - name: Job Summary
+        if: always()
+        run: |
+          {
+            echo "# Supply Chain Security Report — Docker"
+            echo ""
+            echo "**Image:** \`${{ inputs.image-name }}\`"
+            echo ""
+            echo '```'
+            [ -s trivy-image.txt ] && cat trivy-image.txt || echo "No vulnerabilities found."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
